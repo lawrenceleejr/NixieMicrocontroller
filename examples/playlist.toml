@@ -1,0 +1,46 @@
+# nixiefeed playlist:   nixiefeed run --config examples/playlist.toml
+#
+# Each [[show]] is displayed for `seconds` / `minutes`, then the next one.
+# `params` are the source's parameters (see `nixiefeed list`);
+# `format` changes how the value becomes digits:
+#     shown = round(value * scale + offset)
+#     overflow = "clip" (stop at 99999) | "wrap" (odometer: last five digits)
+#     channel  = 0-9: use the first tube as a label, e.g. channel 2 + 142 -> 20142
+
+[device]
+port = "console"            # "/dev/ttyUSB0", "/dev/tty.usbserial-1410", "COM3"...
+gate_ms = 1000              # the counter's gate time (1 s: display reads in Hz)
+exercise_every_minutes = 60 # light every digit hourly (prevents cathode poisoning)
+
+[format]                    # defaults for every [[show]]
+overflow = "clip"
+
+[[show]]
+source = "us_births_today"
+minutes = 3
+
+[[show]]
+source = "us_traffic_deaths_ytd"
+minutes = 3
+
+[[show]]
+# Outdoor temperature in kelvin, to 0.01 K: 21.37 C -> 29452
+source = "weather"
+minutes = 2
+params = { latitude = 40.71, longitude = -74.01, temperature_unit = "celsius" }  # set your town
+format = { scale = 100, offset = 27315 }
+
+[[show]]
+# Barometric pressure in tenths of a hPa: 1013.2 -> 10132
+source = "weather"
+minutes = 2
+params = { latitude = 40.71, longitude = -74.01, variable = "surface_pressure" }
+format = { scale = 10 }
+
+[[show]]
+source = "quakes"           # earthquakes worldwide in the last 24 h (USGS)
+minutes = 2
+
+[[show]]
+source = "solar_wind"       # km/s at the L1 point, a million miles sunward
+minutes = 2
