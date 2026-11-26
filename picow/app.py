@@ -192,6 +192,7 @@ class Controller:
             "source": item.label,
             "value": item.value,
             "error": item.error,
+            "detail": item.source.detail,
             "playlist": [i.label for i in self.app.items],
             "index": self.app.index,
             "cal_ppm": self.cal_ppm,

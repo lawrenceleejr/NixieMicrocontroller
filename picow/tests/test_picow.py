@@ -465,3 +465,118 @@ def test_serial_counter_counts_cosmicwatch_lines():
     assert sc.count == 1  # the second line is not finished yet
     sc.feed(b"02 88.41 5 22.10\r\n\r\n")
     assert sc.count == 2
+
+
+# ------------------------------------------------- live science (fixtures) --
+# Real responses saved on 2026-11-26 around 11:27 UTC.
+DATA = __import__("os").path.join(__import__("os").path.dirname(__file__), "data")
+
+
+def fixture(name):
+    with open(__import__("os").path.join(DATA, name)) as f:
+        return f.read()
+
+
+@pytest.fixture
+def fake_text(monkeypatch):
+    responses, calls = {}, []
+
+    def fake(url, tail=None):
+        calls.append((url, tail))
+        for key, value in responses.items():
+            if key in url:
+                return value[-tail:] if tail else value
+        raise SourceError("no fake for " + url)
+
+    monkeypatch.setattr(sources, "http_text", fake)
+    return responses, calls
+
+
+def test_cosmic_rays_from_nmdb(fake_text):
+    responses, calls = fake_text
+    responses["nmdb.eu"] = fixture("nmdb_thul.html")
+    src = make("cosmic_rays", {"station": "thul"})
+    v = src.read(Context(epoch(2026, 11, 26, 11, 26)))
+    assert v == pytest.approx(116.2 * 60)  # 11:23 reading, counts/s -> per minute
+    assert "stations%5B%5D=THUL" in calls[0][0]
+    assert "start_hour=11&start_min=6" in calls[0][0] and "end_min=26" in calls[0][0]
+    assert "116.20 counts/s at 11:23" in src.detail
+    with pytest.raises(SourceError):  # an hour later the same data is stale
+        src.read(Context(epoch(2026, 11, 26, 12, 30)))
+
+
+def test_sun_xrays_from_goes_tail(fake_text):
+    responses, calls = fake_text
+    responses["goes"] = fixture("goes_xrays_tail.json")
+    src = make("sun_xrays")
+    v = src.read(Context(epoch(2026, 11, 26, 11, 27)))
+    assert v == pytest.approx(170.84, abs=0.01)   # B1.7 flare class
+    assert calls[0][1] == 3000                    # only the tail is kept
+    assert src.detail.startswith("class B1.7")
+    app = App([{"source": "sun_xrays"}])
+    assert app.items[0].fmt.to_counter(v) == 171
+    assert app.items[0].fmt.to_counter(2.3e-4 * 1e9) == 130000  # X2.3: lamp + 30000
+
+
+def test_flare_class():
+    assert sources.flare_class(1.708e-7) == "B1.7"
+    assert sources.flare_class(5.2e-5) == "M5.2"
+    assert sources.flare_class(1.2e-4) == "X1.2"
+
+
+def test_deep_space_network(fake_text):
+    responses, _ = fake_text
+    responses["dsn.xml"] = fixture("dsn.xml")
+    c = Context(epoch(2026, 11, 26, 11, 27))
+    far = make("deep_space")
+    assert far.read(c) == 72500             # Voyager 2: 145,000 s round trip
+    assert far.detail == "Voyager 2, 21.7 billion km"
+    kbps = make("deep_space", {"stat": "kbps"})
+    assert kbps.read(c) == pytest.approx(30167.81)
+    n = make("deep_space", {"stat": "spacecraft"})
+    assert n.read(c) == 7 and "Webb" in n.detail
+
+
+def test_xml_tags():
+    tags = sources.xml_tags('<a><t name="x" v="1"/><t  name="y" v=""/></a>', "t")
+    assert tags == [{"name": "x", "v": "1"}, {"name": "y", "v": ""}]
+
+
+def test_iss_distance(fake_http):
+    _, responses = fake_http
+    responses["wheretheiss"] = json.loads(fixture("iss.json"))
+    iss = responses["wheretheiss"]
+    # straight overhead -> just the altitude
+    assert sources.iss_distance_km(10, 20, 10, 20, 420) == pytest.approx(420)
+    # opposite side of the Earth -> through the planet
+    assert sources.iss_distance_km(0, 0, 0, 180, 420) == pytest.approx(2 * 6371 + 420)
+    v = make("iss_distance").read(Context(0, 0, iss["latitude"] + 1.0, iss["longitude"]))
+    assert 420 < v < 450 + 112  # one degree of latitude away ~ 111 km
+
+
+class FakeResponse:
+    def __init__(self, body, status=200):
+        self.status_code = status
+        self.content = body
+        self._pos = 0
+        self.raw = self
+
+    def read(self, n):
+        chunk = self.content[self._pos:self._pos + n]
+        self._pos += n
+        return chunk
+
+    def close(self):
+        pass
+
+
+def test_http_text_tail_streams(monkeypatch):
+    body = b"x" * 50000 + b'{"end": 1}]'
+    fake = __import__("types").SimpleNamespace(get=lambda url, **kw: FakeResponse(body))
+    monkeypatch.setattr(sources, "requests", fake)
+    assert sources.http_text("https://e/x", tail=20) == ("x" * 9 + '{"end": 1}]')
+    assert len(sources.http_text("https://e/x")) == len(body)
+    fake404 = __import__("types").SimpleNamespace(get=lambda url, **kw: FakeResponse(b"", 404))
+    monkeypatch.setattr(sources, "requests", fake404)
+    with pytest.raises(SourceError):
+        sources.http_text("https://e/x")

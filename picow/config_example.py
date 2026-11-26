@@ -22,9 +22,10 @@ EXERCISE_MINUTES = 60         # light every digit this often (prevents cathode p
                               # the tally keeps counting meanwhile)
 SHOW_IP_AT_BOOT = True        # show the last part of the IP address for 10 s
 
-# The particle detector (see picow/README.md, "Cosmic-ray detector").
+# Optional particle detector for the "muons_today" source (see picow/README.md).
+DETECTOR = None
 # Pulse output, e.g. a MightyOhm Geiger kit (3 V, 100 us pulses on its PULSE header):
-DETECTOR = {"type": "pulse", "pin": 18}
+#   DETECTOR = {"type": "pulse", "pin": 18}
 # Two pulse detectors stacked, counting only coincidences (mostly muons):
 #   DETECTOR = {"type": "pulse", "pin": 18, "pin_b": 19, "window_us": 100}
 # CosmicWatch in coincidence mode: the slave's serial TX through a divider to GP1:
@@ -34,5 +35,12 @@ DETECTOR = {"type": "pulse", "pin": 18}
 # optional params and format (scale/offset, overflow "clip"|"wrap"|"overrange",
 # channel 0-9). More sources: see picow/README.md.
 PLAYLIST = [
-    {"source": "muons_today"},
+    {"source": "cosmic_rays"},   # neutrons from cosmic rays per minute, Oulu, Finland
 ]
+# Other live science to try (one line each):
+#   {"source": "cosmic_rays", "params": {"station": "THUL"}}  # Thule, Greenland
+#   {"source": "sun_xrays"}      # the Sun's X-rays: digits = flare class, X lights the lamp
+#   {"source": "deep_space"}     # light-seconds to the farthest spacecraft NASA hears now
+#   {"source": "deep_space", "params": {"stat": "kbps"}}  # data arriving from space
+#   {"source": "iss_distance"}   # km to the astronauts (needs LATITUDE/LONGITUDE)
+#   {"source": "muons_today"}    # your own detector (needs DETECTOR above)

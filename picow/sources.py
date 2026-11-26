@@ -4,9 +4,10 @@
 # is worth calling. ctx carries the time (UTC seconds), the local UTC offset,
 # and the location from config.py.
 #
-# Live sources only use endpoints with small responses: the Pico W has about
-# 150 KB of free RAM, so e.g. earthquakes come from USGS's "count" service
-# rather than the full GeoJSON feed.
+# The Pico W has about 150 KB of free RAM, so live sources use endpoints with
+# small responses (earthquakes come from USGS's "count" service), ask for a
+# short time window (neutron monitors), or read a big file in pieces and keep
+# only its end (GOES X-rays, http_text(tail=...)).
 
 import json
 import math
@@ -53,6 +54,60 @@ def http_json(url):
         raise SourceError("bad JSON from %s" % url.split("?")[0])
     finally:
         r.close()
+
+
+def http_text(url, tail=None):
+    """GET a URL as text. With tail=N, stream it and keep only the last N
+    bytes, so a file much bigger than the Pico's memory can still be read."""
+    if requests is None:
+        raise SourceError("no requests module")
+    short = url.split("?")[0]
+    try:
+        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20, stream=True)
+    except Exception as e:
+        raise SourceError("%s: %s" % (short, e))
+    try:
+        if r.status_code != 200:
+            raise SourceError("HTTP %d from %s" % (r.status_code, short))
+        if tail is None:
+            return r.content.decode()
+        keep = b""
+        while True:
+            chunk = r.raw.read(1024)
+            if not chunk:
+                break
+            keep = (keep + chunk)[-tail:]
+        return keep.decode()
+    except OSError as e:
+        raise SourceError("%s: %s" % (short, e))
+    finally:
+        r.close()
+
+
+def xml_tags(xml, name):
+    """Attribute dicts of every <name .../> tag (enough for simple feeds;
+    MicroPython's re module has no finditer)."""
+    out = []
+    start = 0
+    opener = "<" + name + " "
+    while True:
+        i = xml.find(opener, start)
+        if i < 0:
+            return out
+        j = xml.find(">", i)
+        tag = xml[i + len(opener):j]
+        attrs = {}
+        k = 0
+        while True:
+            eq = tag.find('="', k)
+            if eq < 0:
+                break
+            key = tag[tag.rfind(" ", 0, eq) + 1:eq].strip()
+            end = tag.find('"', eq + 2)
+            attrs[key] = tag[eq + 2:end]
+            k = end + 1
+        out.append(attrs)
+        start = j
 
 
 def dig(data, path):
@@ -131,6 +186,7 @@ def fnv1a(text):
 # ------------------------------------------------------------------ sources --
 class Source:
     summary = ""
+    detail = ""     # extra text for the web page, e.g. "Voyager 2, 21.7 billion km"
     refresh_s = 1
     scale = 1.0     # display defaults; the playlist can override them
     offset = 0.0
@@ -341,6 +397,201 @@ class JsonValue(Source):
             raise SourceError("%s is not a number" % (self.path or "the response"))
 
 
+# --------------------------------------------------------- live science --
+class CosmicRays(Source):
+    """Cosmic-ray neutrons counted by a neutron monitor, from NMDB.
+
+    Neutron monitors count secondary particles from cosmic rays (protons and
+    nuclei from beyond the solar system) hitting the atmosphere. The rate dips
+    for days after big solar storms (Forbush decreases) and, very rarely,
+    jumps when the Sun itself accelerates particles (ground level events).
+    Data: NMDB, www.nmdb.eu (see picow/README.md for the acknowledgment).
+    """
+
+    summary = "cosmic-ray neutrons per minute (NMDB)"
+    refresh_s = 60
+    station = "OULU"      # OULU (Finland, since 1964), THUL (Greenland), JUNG (Swiss Alps)...
+    unit = "per_minute"   # per_minute | per_second
+    max_age_min = 30
+
+    URL = ("https://www.nmdb.eu/nest/draw_graph.php?formchk=1&stations%%5B%%5D=%s"
+           "&tabchoice=revori&dtype=corr_for_efficiency&tresolution=0&yunits=0"
+           "&date_choice=bydate&start_year=%d&start_month=%d&start_day=%d&start_hour=%d"
+           "&start_min=%d&end_year=%d&end_month=%d&end_day=%d&end_hour=%d&end_min=%d"
+           "&output=ascii")
+
+    def url(self, now):
+        a, b = time.gmtime(now - 20 * 60), time.gmtime(now)
+        return self.URL % (self.station.upper(), a[0], a[1], a[2], a[3], a[4],
+                           b[0], b[1], b[2], b[3], b[4])
+
+    def read(self, ctx):
+        when, rate = parse_nmdb(http_text(self.url(ctx.now)))
+        age = (ctx.now - when) // 60
+        if age > self.max_age_min:
+            raise SourceError("%s data is %d min old" % (self.station, age))
+        self.detail = "%s: %.2f counts/s at %s UTC" % (self.station.upper(), rate,
+                                                       iso_utc(when)[11:16])
+        return rate * 60 if self.unit == "per_minute" else rate
+
+
+def parse_nmdb(text):
+    """Last 'YYYY-MM-DD HH:MM:SS;value' line of an NMDB ascii page."""
+    last = None
+    for line in text.split("\n"):
+        line = line.strip()
+        if len(line) > 20 and line[4] == "-" and line[19] == ";":
+            last = line
+    if last is None:
+        raise SourceError("no neutron monitor data in the reply")
+    try:
+        return parse_iso(last[:19]), float(last[20:])
+    except ValueError:
+        raise SourceError("unreadable NMDB line: %s" % last)
+
+
+class SunXrays(Source):
+    """The Sun's X-ray brightness from NOAA's GOES satellite (1-8 A band), in
+    nanowatts per square metre. The number of digits is the flare class:
+    A = 2 digits, B = 3, C = 4, M = 5, and an X-class flare lights the
+    overrange lamp. Flares come in bursts from active regions."""
+
+    summary = "the Sun's X-ray brightness, nW/m2 (GOES)"
+    refresh_s = 60
+    overflow = "overrange"
+    band = "0.1-0.8nm"
+    max_age_min = 30
+
+    URL = "https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json"
+
+    def read(self, ctx):
+        # The smallest file is 6 hours (~160 KB): keep only its last records.
+        when, flux = parse_goes_tail(http_text(self.URL, tail=3000), self.band)
+        age = (ctx.now - when) // 60
+        if age > self.max_age_min:
+            raise SourceError("GOES data is %d min old" % age)
+        self.detail = "class %s at %s UTC" % (flare_class(flux), iso_utc(when)[11:16])
+        return flux * 1e9
+
+
+def parse_goes_tail(text, band):
+    """Newest record for `band` in the tail of a GOES X-ray JSON list."""
+    best = None
+    i = text.find("{")
+    while i >= 0:
+        j = text.find("}", i)
+        if j < 0:
+            break
+        try:
+            rec = json.loads(text[i:j + 1])
+            if rec.get("energy") == band and rec.get("flux") is not None:
+                best = rec
+        except ValueError:
+            pass  # the first, cut-off record
+        i = text.find("{", j)
+    if best is None:
+        raise SourceError("no %s X-ray record found" % band)
+    return parse_iso(best["time_tag"].rstrip("Z")), float(best["flux"])
+
+
+def flare_class(flux):
+    for letter, low in (("X", 1e-4), ("M", 1e-5), ("C", 1e-6), ("B", 1e-7), ("A", 1e-8)):
+        if flux >= low:
+            return "%s%.1f" % (letter, flux / low)
+    return "<A1"
+
+
+SPACECRAFT = {
+    "VGR1": "Voyager 1", "VGR2": "Voyager 2", "NHPC": "New Horizons", "JWST": "Webb",
+    "MRO": "Mars Reconnaissance Orbiter", "M01O": "Mars Odyssey", "MVN": "MAVEN",
+    "M20": "Perseverance", "MSL": "Curiosity", "TGO": "ExoMars TGO", "MEX": "Mars Express",
+    "JNO": "Juno", "PSYC": "Psyche", "LUCY": "Lucy", "EURC": "Europa Clipper",
+    "SPP": "Parker Solar Probe", "SOHO": "SOHO", "ACE": "ACE", "CHDR": "Chandra",
+    "KPLO": "Danuri (lunar orbiter)",
+}
+
+
+class DeepSpace(Source):
+    """NASA's Deep Space Network right now (eyes.nasa.gov/dsn).
+
+    stat = "farthest": light-seconds to the farthest spacecraft the network is
+                       talking to (Voyager 2 is ~72,000; Mars ~600; Webb ~6)
+           "kbps":     total data arriving from space, kilobits per second
+           "spacecraft": how many spacecraft are sending data right now
+    """
+
+    summary = "light-seconds to the farthest spacecraft NASA is talking to"
+    refresh_s = 30
+    stat = "farthest"
+
+    URL = "https://eyes.nasa.gov/dsn/data/dsn.xml"
+
+    def read(self, ctx):
+        info = parse_dsn(http_text(self.URL))
+        if self.stat == "farthest":
+            if info["farthest"] is None:
+                raise SourceError("no spacecraft with a known distance right now")
+            name, rtlt, km = info["farthest"]
+            self.detail = "%s, %.1f billion km" % (SPACECRAFT.get(name, name), km / 1e9)
+            return rtlt / 2
+        if self.stat == "kbps":
+            self.detail = "%d spacecraft sending" % len(info["sending"])
+            return info["bps"] / 1000
+        if self.stat == "spacecraft":
+            self.detail = ", ".join(SPACECRAFT.get(n, n) for n in info["sending"])
+            return len(info["sending"])
+        raise SourceError("stat must be farthest, kbps or spacecraft")
+
+
+def parse_dsn(xml):
+    farthest = None
+    for t in xml_tags(xml, "target"):
+        try:
+            rtlt = float(t.get("rtlt", "-1"))
+            km = float(t.get("downlegRange", "-1"))
+        except ValueError:
+            continue
+        if rtlt > 0 and (farthest is None or rtlt > farthest[1]):
+            farthest = (t.get("name", "?"), rtlt, km)
+    bps = 0.0
+    sending = []
+    for d in xml_tags(xml, "downSignal"):
+        if d.get("active") == "true" and d.get("spacecraft"):
+            try:
+                bps += float(d.get("dataRate") or 0)
+            except ValueError:
+                pass
+            if d["spacecraft"] not in sending:
+                sending.append(d["spacecraft"])
+    return {"farthest": farthest, "bps": bps, "sending": sending}
+
+
+class IssDistance(Source):
+    """Kilometres from you (config.py LATITUDE/LONGITUDE) to the people on the
+    International Space Station, in a straight line. Changes every second:
+    from ~420 km overhead to ~13,000 km when it's over the far side of Earth."""
+
+    summary = "km between you and the astronauts on the ISS"
+    refresh_s = 5
+    URL = "https://api.wheretheiss.at/v1/satellites/25544"
+
+    def read(self, ctx):
+        if not (ctx.latitude or ctx.longitude):
+            raise SourceError("set LATITUDE and LONGITUDE in config.py")
+        data = http_json(self.URL)
+        self.detail = "over %.1f, %.1f" % (data["latitude"], data["longitude"])
+        return iss_distance_km(ctx.latitude, ctx.longitude,
+                               data["latitude"], data["longitude"], data["altitude"])
+
+
+def iss_distance_km(lat1, lon1, lat2, lon2, alt_km, radius=6371.0):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    cos_angle = (math.sin(p1) * math.sin(p2) +
+                 math.cos(p1) * math.cos(p2) * math.cos(math.radians(lon2 - lon1)))
+    r1, r2 = radius, radius + alt_km
+    return math.sqrt(max(0.0, r1 * r1 + r2 * r2 - 2 * r1 * r2 * cos_angle))
+
+
 # Hardware counters set up by main.py from config.DETECTOR, by name.
 HARDWARE = {}
 
@@ -440,6 +691,10 @@ SOURCES = {
     "kp_index": (KpIndex, KpIndex.summary, {}),
     "river": (River, River.summary, {}),
     "json": (JsonValue, JsonValue.summary, {}),
+    "cosmic_rays": (CosmicRays, "cosmic-ray neutrons per minute at Oulu, Finland", {}),
+    "sun_xrays": (SunXrays, SunXrays.summary, {}),
+    "deep_space": (DeepSpace, DeepSpace.summary, {}),
+    "iss_distance": (IssDistance, IssDistance.summary, {}),
     "muons_today": (DetectorTally, DetectorTally.summary, {}),
     "detector": (DetectorTally, "particles counted by the detector", {}),
 }

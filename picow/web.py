@@ -47,7 +47,7 @@ form{margin:.6em 0}input{font:inherit;width:7em}button{font:inherit}
 @media(prefers-color-scheme:dark){body{background:#151515;color:#ddd}}
 </style></head><body>
 <div class="tubes">%(shown)s</div>
-<p>%(source)s <span class="dim">(%(mode)s)</span><br><small>value %(value)s %(error)s</small></p>
+<p>%(source)s <span class="dim">(%(mode)s)</span><br><small>%(detail)s %(error)s</small></p>
 <table>
 <tr><td>playlist</td><td>%(playlist)s</td></tr>
 <tr><td>calibration</td><td>%(cal)s ppm %(ref)s</td></tr>
@@ -70,7 +70,8 @@ def render(st):
         "shown": esc(st["shown"]),
         "source": esc(st["source"]),
         "mode": esc(st["mode"]),
-        "value": esc("" if st["value"] is None else st["value"]),
+        "detail": esc(st.get("detail") or ("value %s" % ("" if st["value"] is None
+                                                          else st["value"]))),
         "error": ("&mdash; " + esc(st["error"])) if st["error"] else "",
         "playlist": " &middot; ".join(names),
         "cal": "%+.3f" % st["cal_ppm"],
