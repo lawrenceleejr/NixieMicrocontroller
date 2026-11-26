@@ -32,7 +32,7 @@ Don't use `analogWrite` on D9/D10, which also use Timer1.
 
 The number shown is *edges counted per gate*. Set the IB-1100 to the range
 that uses its **1-second gate** (reading in Hz). Five digits then cover
-00000–99999, and the Arduino tops out at 100 kHz. If you use a different gate,
+00000–99999, and the Arduino tops out at 106 kHz. If you use a different gate,
 tell the firmware: `nixiefeed run … --gate-ms 100` (or send `G 100`), and it
 scales the frequency (a 0.1 s gate updates faster but needs 10× the frequency,
 so only four digits are usable).

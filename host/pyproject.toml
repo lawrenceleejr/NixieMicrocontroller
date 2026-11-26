@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "nixiefeed"
 version = "1.0.0"
 description = "Feed live and modelled numbers to a frequency-counter Nixie display (Heathkit IB-1100) through an Arduino."
-readme = "../README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "pyserial>=3.5",

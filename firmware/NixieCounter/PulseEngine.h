@@ -14,10 +14,11 @@ static const uint8_t kOutputPin = 12;
 static const uint8_t kOutputPin = 10;
 #endif
 
-// Shortest period in CPU cycles. The interrupt must run once per period, and
-// it must not fall too far behind when the serial or millis() interrupts
-// are also running. At 16 MHz, 160 cycles allows up to 100 kHz.
-static const uint16_t kMinCycles = 160;
+// Shortest period in CPU cycles. The interrupt (92 cycles) runs once per
+// period and needs headroom for the serial and millis() interrupts. At 16 MHz,
+// 150 cycles allows up to 106.6 kHz: enough for 99999 even with a crystal
+// up to 6 % slow.
+static const uint16_t kMinCycles = 150;
 
 void begin();
 

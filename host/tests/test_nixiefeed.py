@@ -77,12 +77,14 @@ def test_traffic_deaths_mid_year():
 def test_poisson_is_monotonic_reproducible_and_right_on_average():
     src = make("us_births_today", timezone="UTC")
     t0 = datetime(2026, 3, 1, tzinfo=UTC)
-    values = [src.read(t0 + timedelta(minutes=10 * k)) for k in range(145)]
+    values = [src.read(t0 + timedelta(minutes=10 * k)) for k in range(144)]  # one day
     assert values == sorted(values)
     again = make("us_births_today", timezone="UTC")
     assert again.read(t0 + timedelta(hours=12)) == values[72]
+    end_of_day = src.read(t0 + timedelta(hours=23, minutes=59, seconds=59))
     expected_day = 3_628_934 / 365.2425
-    assert abs(values[-1] - expected_day) < 5 * expected_day ** 0.5  # 5 sigma
+    assert abs(end_of_day - expected_day) < 5 * expected_day ** 0.5  # 5 sigma
+    assert src.read(t0 + timedelta(days=1)) == 0  # resets at midnight
 
 
 def test_clock_and_countdown():

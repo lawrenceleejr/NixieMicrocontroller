@@ -28,7 +28,7 @@ static int g_failures = 0;
   } while (0)
 
 static const uint32_t kF = 16000000UL;
-static const uint16_t kMinCycles = 160;
+static const uint16_t kMinCycles = 150;  // as PulseEngine.h
 
 // Edge times (CPU ticks) for `seconds` seconds of output.
 static std::vector<uint64_t> simulateEdges(const PeriodPlan &plan, double seconds,
@@ -76,10 +76,15 @@ static void testExactCounts() {
   double worstExact = 1.0;
   for (int32_t ppb : ppbs) {
     for (uint32_t n : numbers) {
-      uint32_t mHz;
+      uint32_t mHz = 0;
       CHECK(numberToMilliHz(n, 1000, mHz));
-      PeriodPlan plan;
-      CHECK(planPeriod(kF, ppb, mHz, kMinCycles, plan) == PLAN_OK);
+      PeriodPlan plan{};
+      const PlanResult r = planPeriod(kF, ppb, mHz, kMinCycles, plan);
+      if (r != PLAN_OK) {
+        std::printf("FAIL plan N=%u ppb=%d -> %d\n", n, ppb, (int)r);
+        ++g_failures;
+        continue;
+      }
       // The board's crystal really runs at kF * (1 + ppb): that many ticks is
       // one true second, which is what the counter's gate measures.
       const double trueTicksPerSecond = kF * (1.0 + ppb * 1e-9);
@@ -102,23 +107,23 @@ static void testExactCounts() {
 
 // Without correction, a crystal that is 20 ppm fast makes every period 20 ppm
 // short in true time, so at full scale the counter sees 99999 * (1 + 20e-6)
-// = 100001 edges. This checks that the simulation really shows the error that
+// = 100000.98 edges: it reads 100001 (sometimes 100000), never 99999. This checks that the simulation really shows the error that
 // calibration removes.
 static void testUncalibratedDrifts() {
   std::mt19937_64 rng(7);
-  uint32_t mHz;
+  uint32_t mHz = 0;
   numberToMilliHz(99999, 1000, mHz);
-  PeriodPlan plan;
+  PeriodPlan plan{};
   CHECK(planPeriod(kF, 0, mHz, kMinCycles, plan) == PLAN_OK);
   const double trueTicks = kF * (1.0 + 20e-6);
   const auto edges = simulateEdges(plan, 3.0, trueTicks);
   uint64_t lo, hi;
   gateCounts(edges, trueTicks, 2000, lo, hi, rng);
-  CHECK(lo >= 100001 && hi <= 100002);
+  CHECK(lo >= 100000 && hi <= 100001);
 }
 
 static void testPlanEdges() {
-  PeriodPlan p;
+  PeriodPlan p{};
   CHECK(planPeriod(kF, 0, 1000000, kMinCycles, p) == PLAN_OK);  // 1 kHz
   CHECK(p.prescIndex == 0 && p.whole == 16000 && p.frac == 0);
 
@@ -126,8 +131,10 @@ static void testPlanEdges() {
   CHECK(p.prescIndex == 2 && p.whole == 35714);
   CHECK(std::fabs(p.frac / 65536.0 - 0.2857142857) < 1.0 / 65536);
 
-  CHECK(planPeriod(kF, 0, 100000000, kMinCycles, p) == PLAN_OK);   // 100 kHz
-  CHECK(planPeriod(kF, 0, 100001000, kMinCycles, p) == PLAN_TOO_FAST);
+  CHECK(planPeriod(kF, 0, 106666000, kMinCycles, p) == PLAN_OK);   // 150.0009 ticks
+  CHECK(planPeriod(kF, 0, 106667000, kMinCycles, p) == PLAN_TOO_FAST);
+  // 99999 must work even with a crystal 0.5 % slow
+  CHECK(planPeriod(kF, -5000000, 99999000, kMinCycles, p) == PLAN_OK);
   CHECK(planPeriod(kF, 0, 239, kMinCycles, p) == PLAN_OK);         // 0.239 Hz
   CHECK(planPeriod(kF, 0, 238, kMinCycles, p) == PLAN_TOO_SLOW);
   CHECK(planPeriod(kF, 0, 0, kMinCycles, p) == PLAN_OFF);
@@ -136,7 +143,7 @@ static void testPlanEdges() {
 }
 
 static void testHelpers() {
-  uint32_t mHz;
+  uint32_t mHz = 0;
   CHECK(numberToMilliHz(12345, 1000, mHz) && mHz == 12345000UL);
   CHECK(numberToMilliHz(12345, 100, mHz) && mHz == 123450000UL);   // 0.1 s gate
   CHECK(numberToMilliHz(12345, 10000, mHz) && mHz == 1234500UL);   // 10 s gate
@@ -169,6 +176,7 @@ static void testParser() {
 }
 
 int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
   testPlanEdges();
   testHelpers();
   testParser();

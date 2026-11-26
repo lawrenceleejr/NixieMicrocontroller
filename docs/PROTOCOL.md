@@ -18,7 +18,7 @@ decimals.
 Every command is answered with exactly one line:
 
 ```
-OK NIXIE 1.0 mode=number N=12345 F=12345.000 G=1000 C=-12.500 R=0 max=100000
+OK NIXIE 1.0 mode=number N=12345 F=12345.000 G=1000 C=-12.500 R=0 max=106666
 ERR too fast
 ```
 
@@ -29,5 +29,5 @@ or `lock=waiting` until the first 10-second measurement is in.
 Lines starting with `#` are unsolicited notices (e.g. `# exercise done`) and
 can be ignored. At power-up the board prints `NIXIE 1.0 READY`.
 
-Limits on an ATmega328 at 16 MHz: 0.24 Hz to 100 kHz. 0 Hz stops the output
+Limits on an ATmega328 at 16 MHz: 0.24 Hz to 106.6 kHz. 0 Hz stops the output
 (the counter reads 00000).
