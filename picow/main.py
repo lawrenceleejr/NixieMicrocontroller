@@ -20,6 +20,7 @@ except ImportError:
 
 from app import App, Controller, load_settings
 from nixie_pio import Engine, RefLock
+import sources
 from sources import SourceError, http_json
 import web
 
@@ -48,6 +49,24 @@ def connect_wifi(engine, timeout_s=30):
         return ip
     print("Wi-Fi failed, status", wlan.status())
     return None
+
+
+def setup_detector():
+    """config.DETECTOR -> a counter that the muons_today source reads."""
+    det = cfg("DETECTOR", None)
+    if not det:
+        return
+    if det.get("type", "pulse") == "serial":
+        from detector import SerialEventCounter
+        counter = SerialEventCounter(det.get("uart", 0), det.get("rx_pin", 1),
+                                     det.get("baud", 9600))
+    else:
+        from detector import PulseCounter
+        counter = PulseCounter(det["pin"], det.get("pin_b"), det.get("window_us", 100),
+                               det.get("dead_us", 50), det.get("edge", "rising"),
+                               det.get("pull"))
+    sources.HARDWARE["detector"] = counter
+    print("detector ready:", det)
 
 
 def sync_clock():
@@ -115,6 +134,7 @@ async def main():
         settings["cal_ppm"] = cfg("CAL_PPM", 0.0)
     engine = Engine(cfg("OUTPUT_PIN", 16), gate_ms=gate_ms)
     engine.show(0)
+    setup_detector()  # start counting straight away, before Wi-Fi
 
     ip = connect_wifi(engine)
     if ip and cfg("SHOW_IP_AT_BOOT", True):

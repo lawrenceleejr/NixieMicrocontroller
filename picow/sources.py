@@ -8,6 +8,7 @@
 # 150 KB of free RAM, so e.g. earthquakes come from USGS's "count" service
 # rather than the full GeoJSON feed.
 
+import json
 import math
 import time
 
@@ -133,6 +134,7 @@ class Source:
     refresh_s = 1
     scale = 1.0     # display defaults; the playlist can override them
     offset = 0.0
+    overflow = "clip"
 
     def __init__(self, **params):
         for key, value in params.items():
@@ -339,6 +341,77 @@ class JsonValue(Source):
             raise SourceError("%s is not a number" % (self.path or "the response"))
 
 
+# Hardware counters set up by main.py from config.DETECTOR, by name.
+HARDWARE = {}
+
+
+class DetectorTally(Source):
+    """Particles counted by a detector since local midnight (or the hour...).
+
+    The day's tally is saved to flash every few minutes, so a power cut or a
+    reboot loses at most that much, and the clock jump when the Pico first
+    sets its time over the network doesn't reset the count.
+    """
+
+    summary = "cosmic-ray muons through the detector since midnight"
+    refresh_s = 0           # read on every display tick (it is just a counter)
+    overflow = "overrange"  # past 99999 the overrange lamp lights
+    device = "detector"
+    reset = "day"
+    store = "tally.json"
+    save_every_s = 300
+
+    WRAP = 0x3FFFFFFF
+
+    def __init__(self, **params):
+        Source.__init__(self, **params)
+        if self.reset not in PERIODS[:4]:
+            raise SourceError("reset must be minute, hour, day or year")
+        self.period = None
+        self.count = 0
+        self._last_raw = 0
+        self._saved_at = 0
+
+    def read(self, ctx):
+        counter = HARDWARE.get(self.device)
+        if counter is None:
+            raise SourceError("no detector set up: see DETECTOR in config.py")
+        raw = counter.total()
+        start = period_start(ctx.local, self.reset)
+        if start != self.period:
+            # First reading (pulses counted since boot belong to today), a new
+            # day, or the clock was just set: carry on from the saved tally.
+            first = self.period is None
+            self.period = start
+            self.count = self._restore(start) + (raw if first else 0)
+            self._last_raw = raw
+            self._saved_at = ctx.now
+        else:
+            self.count += (raw - self._last_raw) & self.WRAP
+            self._last_raw = raw
+        if ctx.now - self._saved_at >= self.save_every_s:
+            self._save()
+            self._saved_at = ctx.now
+        return float(self.count)
+
+    def _restore(self, start):
+        try:
+            with open(self.store) as f:
+                saved = json.load(f)
+            if saved.get("period") == start:
+                return int(saved.get("count", 0))
+        except (OSError, ValueError):
+            pass
+        return 0
+
+    def _save(self):
+        try:
+            with open(self.store, "w") as f:
+                json.dump({"period": self.period, "count": self.count}, f)
+        except OSError:
+            pass
+
+
 # ----------------------------------------------------------------- registry --
 # name: (class, summary, preset parameters)
 # Yearly rates: US births 3,628,934 (CDC/NCHS, 2024 final); US traffic deaths
@@ -367,6 +440,8 @@ SOURCES = {
     "kp_index": (KpIndex, KpIndex.summary, {}),
     "river": (River, River.summary, {}),
     "json": (JsonValue, JsonValue.summary, {}),
+    "muons_today": (DetectorTally, DetectorTally.summary, {}),
+    "detector": (DetectorTally, "particles counted by the detector", {}),
 }
 
 

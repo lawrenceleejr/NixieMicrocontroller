@@ -4,20 +4,22 @@
 # IB-1100's Hz range). We output a repeating "frame" that is exactly one gate
 # long, measured in system clock ticks, and contains exactly N rising edges:
 #
-#     N periods of q ticks, then a low pause of P ticks,   N*q + P + 8 = F
+#     N pulses spaced q ticks apart, then a low pause of P ticks:
+#     N*q + P + 8 = F  (clock ticks in one gate)
 #
-# where F = clock ticks in one gate. Because the pattern repeats exactly every
-# gate, *any* window one gate long holds exactly N edges, wherever the
-# counter's gate happens to start. (The periods are not quite evenly spaced,
-# which a counter cannot see.)
+# Because the pattern repeats exactly every gate, *any* window one gate long
+# holds exactly N edges, wherever the counter's gate happens to start.
+#
+# The pulse spacing q is fixed (1 us), so the pulses are packed at the start of
+# the frame. That matters when the number changes: going from N to N+1 only
+# appends one pulse and shortens the pause, and every earlier pulse stays where
+# it was. A gate that straddles the change therefore reads N or N+1, never
+# anything else, so a running total can only ever step forwards.
 #
 # The PIO program reads the frame's four numbers from its FIFO. A DMA channel
-# in ring mode feeds the same four words forever, so no CPU time is needed
-# after start-up: Wi-Fi, garbage collection and slow HTTP requests cannot
-# disturb the output.
-#
-# At 125 MHz the shortest period is 7 ticks, so N can go up to ~17 MHz per
-# second of gate. That allows shorter counter gates and the overrange lamp.
+# in ring mode feeds the same four words forever, so no CPU time is needed:
+# Wi-Fi, garbage collection and slow HTTP requests cannot disturb the output.
+# A new number is just two words rewritten in memory; there is no restart.
 
 import array
 
@@ -73,15 +75,23 @@ def frame_ticks(sysclk, gate_ms, ppb):
     return (num + den // 2) // den
 
 
-def plan(number, frame):
+def pulse_period(frame, max_number, spacing):
+    """Ticks between pulses: `spacing`, or less if max_number would not fit."""
+    q = min(spacing, (frame - FRAME_OVERHEAD) // max_number)
+    if q < MIN_PERIOD:
+        raise ValueError("%d per gate is too many for this clock" % max_number)
+    return q
+
+
+def plan(number, frame, period):
     """The four words (N-1, H, L, P) for the PIO program, or None for N = 0."""
     if number <= 0:
         return None
-    q, pad = divmod(frame - FRAME_OVERHEAD, number)
-    if q < MIN_PERIOD:
-        raise ValueError("%d per gate is too fast for this clock" % number)
-    high = (q - PERIOD_OVERHEAD) // 2
-    low = q - PERIOD_OVERHEAD - high
+    pad = frame - FRAME_OVERHEAD - number * period
+    if pad < 0:
+        raise ValueError("%d does not fit in one gate" % number)
+    high = (period - PERIOD_OVERHEAD) // 2
+    low = period - PERIOD_OVERHEAD - high
     return (number - 1, high, low, pad)
 
 
@@ -94,7 +104,8 @@ def frame_length(words):
 class Engine:
     """Drives one output pin. show(n) makes the counter read n."""
 
-    def __init__(self, pin, gate_ms=1000, ppb=0, sm_id=0):
+    def __init__(self, pin, gate_ms=1000, ppb=0, sm_id=0, max_number=199999,
+                 spacing_ns=1000):
         import machine
         import uctypes
 
@@ -103,6 +114,9 @@ class Engine:
         self.gate_ms = gate_ms
         self.ppb = ppb
         self.sysclk = machine.freq()
+        self.max = max_number
+        self.spacing = max(MIN_PERIOD, self.sysclk * spacing_ns // 1000000000)
+        self.period = pulse_period(frame_ticks(self.sysclk, gate_ms, 0), max_number, self.spacing)
         self.number = 0
         self.words = None
         self._pin = machine.Pin(pin, machine.Pin.OUT, value=0)
@@ -118,7 +132,7 @@ class Engine:
         self._addr = addr + 4 * self._first
 
     def max_number(self):
-        return (frame_ticks(self.sysclk, self.gate_ms, self.ppb) - FRAME_OVERHEAD) // MIN_PERIOD
+        return (frame_ticks(self.sysclk, self.gate_ms, self.ppb) - FRAME_OVERHEAD) // self.period
 
     def show(self, number):
         number = int(number)
@@ -126,12 +140,14 @@ class Engine:
             self._stop()
             self.number, self.words = 0, None
             return
-        words = plan(number, frame_ticks(self.sysclk, self.gate_ms, self.ppb))
-        if self.words is not None and words[:3] == self.words[:3]:
-            # Only the pause changed (a small calibration update). A single
-            # aligned 32-bit store is atomic, so the DMA picks it up on the
-            # next frame with no glitch.
+        words = plan(number, frame_ticks(self.sysclk, self.gate_ms, self.ppb), self.period)
+        if self.words is not None and words[1:3] == self.words[1:3]:
+            # Same pulse shape: just rewrite the count and the pause. Each is
+            # one atomic 32-bit store. If the PIO happens to read the new count
+            # with the old pause (or the reverse), that one frame is q ticks
+            # (1 us) long or short: a harmless phase shift, no lost edges.
             self._raw[self._first + 3] = words[3]
+            self._raw[self._first] = words[0]
         else:
             self._restart(words)
         self.number, self.words = number, words
@@ -143,6 +159,9 @@ class Engine:
 
     def set_gate(self, gate_ms):
         self.gate_ms = int(gate_ms)
+        self.period = pulse_period(frame_ticks(self.sysclk, self.gate_ms, 0), self.max,
+                                   self.spacing)
+        self.words = None  # force a restart with the new pulse shape
         if self.number:
             self.show(self.number)
 
@@ -152,10 +171,9 @@ class Engine:
         self._sm.exec("set(pins, 0)")
 
     def _restart(self, words):
-        # A new N (or period) needs the program and the DMA ring to start
-        # again from word 0 together, so they agree on which word is which.
-        # This cuts the frame in progress: the counter shows one odd reading
-        # while the value is changing anyway.
+        # Only at start-up, after 0, or after a gate change: the program and
+        # the DMA ring start again from word 0 together, so they agree on
+        # which word is which.
         self._dma.active(0)
         self._sm.active(0)
         for i in range(4):

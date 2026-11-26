@@ -15,7 +15,7 @@ class Item:
         self.fmt = Format(scale=entry.get("scale", self.source.scale),
                           offset=entry.get("offset", self.source.offset),
                           digits=entry.get("digits", 5),
-                          overflow=entry.get("overflow", "clip"),
+                          overflow=entry.get("overflow", self.source.overflow),
                           channel=entry.get("channel"))
         self.dwell = entry.get("seconds", 0) + 60 * entry.get("minutes", 0) or 60
         self.label = entry.get("label", self.source.label)

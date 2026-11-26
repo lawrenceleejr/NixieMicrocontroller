@@ -15,7 +15,8 @@ There are two ways to build it:
 |---|---|---|
 | boards | one Pico W, nothing else | Arduino Nano/Uno + PC or Raspberry Pi |
 | data | fetched over Wi-Fi by the Pico | fetched by `nixiefeed` on the computer |
-| signal | PIO + DMA: exact, no CPU, up to ~17 MHz | Timer1 + interrupt: exact, up to 106 kHz |
+| signal | PIO + DMA: exact, no CPU, up to 1 MHz | Timer1 + interrupt: exact, up to 106 kHz |
+| default display | cosmic-ray muons through a detector beside it, since midnight | any `nixiefeed` source |
 | control | web page on your phone | command line |
 | language | MicroPython | C++ firmware + Python host |
 

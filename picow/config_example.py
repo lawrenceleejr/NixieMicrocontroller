@@ -18,26 +18,21 @@ CAL_PPM = 0.0                 # starting crystal correction; the web page saves 
 REF_PIN = None                # optional reference clock input, e.g. 17
 REF_HZ = 0                    # its frequency (counter time base tap, or 1 for GPS 1PPS)
 
-EXERCISE_MINUTES = 60         # light every digit this often (prevents cathode poisoning)
+EXERCISE_MINUTES = 60         # light every digit this often (prevents cathode poisoning;
+                              # the tally keeps counting meanwhile)
 SHOW_IP_AT_BOOT = True        # show the last part of the IP address for 10 s
 
-# What to show. Each entry: source name, how long, optional params and format:
-#   scale/offset: shown = value * scale + offset
-#   overflow: "clip" | "wrap" | "overrange" (lights the lamp past 99999)
-#   channel: 0-9 uses the first tube as a label
+# The particle detector (see picow/README.md, "Cosmic-ray detector").
+# Pulse output, e.g. a MightyOhm Geiger kit (3 V, 100 us pulses on its PULSE header):
+DETECTOR = {"type": "pulse", "pin": 18}
+# Two pulse detectors stacked, counting only coincidences (mostly muons):
+#   DETECTOR = {"type": "pulse", "pin": 18, "pin_b": 19, "window_us": 100}
+# CosmicWatch in coincidence mode: the slave's serial TX through a divider to GP1:
+#   DETECTOR = {"type": "serial", "uart": 0, "rx_pin": 1, "baud": 9600}
+
+# What to show: one number, all day. Each entry: source name, how long,
+# optional params and format (scale/offset, overflow "clip"|"wrap"|"overrange",
+# channel 0-9). More sources: see picow/README.md.
 PLAYLIST = [
-    {"source": "us_births_today", "minutes": 3},
-    {"source": "us_traffic_deaths_ytd", "minutes": 3},
-    # Outdoor temperature in kelvin to 0.01 K: 21.37 C -> 29452
-    {"source": "weather", "minutes": 2,
-     "params": {"temperature_unit": "celsius"}, "scale": 100, "offset": 27315},
-    # Pressure in tenths of a hPa: 1013.2 -> 10132
-    {"source": "weather", "minutes": 2,
-     "params": {"variable": "surface_pressure"}, "scale": 10},
-    {"source": "quakes", "minutes": 2},
-    {"source": "solar_wind", "minutes": 2},
-    # More: {"source": "clock"} (seconds since midnight), {"source": "kp_index"},
-    # {"source": "countdown", "params": {"target": "2027-01-01"}},
-    # {"source": "river", "params": {"site": "01646500"}},
-    # {"source": "json", "params": {"url": "https://...", "path": "a.b.0"}},
+    {"source": "muons_today"},
 ]

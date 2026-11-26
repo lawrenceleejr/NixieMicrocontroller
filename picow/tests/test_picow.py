@@ -12,7 +12,8 @@ import sources
 import web
 from app import App, Controller, calibrate_from_reading
 from display import Format
-from nixie_pio import Engine, clock_error_ppb, frame_length, frame_ticks, plan
+from nixie_pio import (Engine, clock_error_ppb, frame_length, frame_ticks, plan,
+                       pulse_period)
 from sources import Context, SourceError, epoch, make, parse_iso
 
 
@@ -22,7 +23,7 @@ from sources import Context, SourceError, epoch, make, parse_iso
 def test_pio_frames_are_exact(emulator, n, frame):
     """Emulate the real program: every frame lasts exactly `frame` cycles and
     every window of that length holds exactly n rising edges."""
-    words = plan(n, frame)
+    words = plan(n, frame, pulse_period(frame, 141 if frame == 1000 else 1428, 20))
     assert frame_length(words) == frame
     emu = emulator(nixie_pio.nixie_frame, words)
     emu.run(6 * frame)
@@ -43,10 +44,10 @@ def test_pio_frames_are_exact(emulator, n, frame):
 
 
 def test_pio_waveform_is_roughly_square(emulator):
-    words = plan(4, 4000)
+    words = plan(4, 4000, 500)
     emu = emulator(nixie_pio.nixie_frame, words)
     highs = []
-    for _ in range(3000):
+    for _ in range(2000):  # the four pulses at the start of the frame
         before = emu.pin
         emu.step()
         highs.append(before)
@@ -55,17 +56,62 @@ def test_pio_waveform_is_roughly_square(emulator):
 
 
 @pytest.mark.parametrize("n", [1, 2, 3, 7, 59, 997, 12345, 31415, 54321, 99999,
-                               100000, 123456, 199999, 1000000, 17857141])
+                               100000, 123456, 199999, 999999])
 def test_plan_at_real_clock(n):
     frame = frame_ticks(125000000, 1000, 0)
     assert frame == 125000000
-    assert frame_length(plan(n, frame)) == frame
+    period = pulse_period(frame, 199999, 125)
+    assert period == 125  # 1 us spacing
+    assert frame_length(plan(n, frame, period)) == frame
 
 
 def test_plan_limits():
     with pytest.raises(ValueError):
-        plan(17857142, 125000000)  # period would be under 7 cycles
-    assert plan(0, 125000000) is None
+        plan(1000000, 125000000, 125)  # 1,000,000 us of pulses don't fit in 1 s
+    assert plan(0, 125000000, 125) is None
+    assert pulse_period(12500000, 199999, 125) == 62  # 0.1 s gate: tighter spacing
+    with pytest.raises(ValueError):
+        pulse_period(125000000, 20000000, 125)
+
+
+def _window_counts(edges, length, starts):
+    for t0 in starts:
+        yield t0, bisect.bisect_left(edges, t0 + length) - bisect.bisect_left(edges, t0)
+
+
+def test_changing_number_only_ever_reads_old_or_new(emulator):
+    """A running total: the number goes up at random moments while the PIO
+    runs, with the DMA prefetching. Every gate must read a value the counter
+    really had around that time, so an odometer never steps backwards."""
+    frame, period = 3000, 10
+    rng = random.Random(7)
+    n = 40
+    emu = emulator(nixie_pio.nixie_frame, plan(n, frame, period))
+    history = [(0, n)]  # (cycle, number written to memory)
+    while emu.cycle < 120 * frame:
+        emu.run(rng.randrange(frame // 3, 3 * frame))
+        n += rng.choice([1, 1, 1, 2, 5])  # occasional clusters
+        words = plan(n, frame, period)
+        # the Engine's in-place update: pause word, then count word
+        emu.memory[3] = words[3]
+        if rng.random() < 0.5:
+            emu.run(rng.randrange(0, 40))  # let the PIO run between the two stores
+        emu.memory[0] = words[0]
+        history.append((emu.cycle, n))
+
+    def value_at(t):
+        return [v for c, v in history if c <= t][-1]
+
+    edges = emu.rising
+    starts = range(3 * frame, emu.cycle - frame, 7)
+    for t0, count in _window_counts(edges, frame, starts):
+        # The new number reaches the output within two frames (FIFO prefetch).
+        assert value_at(t0 - 3 * frame) <= count <= value_at(t0 + frame), t0
+
+    # Counter gates in sequence (gate + 0.3 s display): never step backwards.
+    readings = [c for _, c in _window_counts(edges, frame,
+                                             range(3 * frame, emu.cycle - frame, 1300 + frame))]
+    assert readings == sorted(readings)
 
 
 def test_frame_ticks_calibration():
@@ -84,7 +130,7 @@ def test_engine_restart_and_glitch_free_calibration():
     eng = Engine(16)
     assert eng._addr % 16 == 0
     eng.show(12345)
-    assert eng.words == plan(12345, 125000000)
+    assert eng.words == plan(12345, 125000000, 125)
     assert list(eng._raw[eng._first:eng._first + 4]) == list(eng.words)
     cfg = eng._dma.log[-1][1]
     assert cfg["ctrl"]["ring_size"] == 4 and cfg["ctrl"]["treq_sel"] == 0
@@ -95,12 +141,19 @@ def test_engine_restart_and_glitch_free_calibration():
     assert sum(1 for e in eng._sm.log if e[0] == "init") == inits
     assert eng._raw[eng._first + 3] == eng.words[3]
 
-    eng.show(54321)  # new number: restart
+    eng.show(54321)  # new number: rewritten in place, no restart
+    assert sum(1 for e in eng._sm.log if e[0] == "init") == inits
+    assert list(eng._raw[eng._first:eng._first + 4]) == list(eng.words)
+
+    eng.set_gate(100)  # new pulse spacing: restart
     assert sum(1 for e in eng._sm.log if e[0] == "init") == inits + 1
+    assert eng.period == 62
 
     eng.show(0)
     assert eng._sm.log[-1] == ("exec", "set(pins, 0)")
     assert eng.number == 0
+    eng.show(1)  # back from 0 needs a restart
+    assert sum(1 for e in eng._sm.log if e[0] == "init") == inits + 2
 
 
 # ----------------------------------------------------------------- format --
@@ -301,3 +354,114 @@ def test_web_routes():
     assert web.route(ctl, "/show", {"n": "x"}, 0)[0].startswith("400")
     assert web.route(ctl, "/nope", {}, 0)[0].startswith("404")
     assert web.parse_query("n=1%2B2&x=a+b") == {"n": "1+2", "x": "a b"}
+
+
+# --------------------------------------------------------------- detector --
+class FakeCounter:
+    def __init__(self):
+        self.n = 0
+
+    def total(self):
+        return self.n
+
+
+@pytest.fixture
+def detector(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    counter = FakeCounter()
+    monkeypatch.setitem(sources.HARDWARE, "detector", counter)
+    return counter
+
+
+def test_muon_tally_counts_resets_and_survives_reboot(detector):
+    detector.n = 12  # pulses counted while Wi-Fi was connecting
+    src = make("muons_today")
+    assert src.read(ctx_at(2026, 11, 26, 9)) == 12
+    detector.n = 400
+    assert src.read(ctx_at(2026, 11, 26, 9, 4)) == 400
+    detector.n = 900
+    assert src.read(ctx_at(2026, 11, 26, 9, 10)) == 900  # saved (5 min passed)
+
+    # Power cut: a fresh source and counter carry on from the saved tally.
+    detector.n = 3
+    again = make("muons_today")
+    assert again.read(ctx_at(2026, 11, 26, 9, 12)) == 903
+
+    # Midnight: back to zero, even with the counter still running.
+    detector.n = 5000
+    assert again.read(ctx_at(2026, 11, 26, 23, 59, 59)) == 5900
+    detector.n = 5003
+    assert again.read(ctx_at(2026, 11, 27, 0, 0, 1)) == 0
+    detector.n = 5010
+    assert again.read(ctx_at(2026, 11, 27, 0, 0, 30)) == 7
+
+
+def test_muon_tally_handles_counter_wrap(detector):
+    src = make("muons_today")
+    detector.n = 0x3FFFFFF0
+    first = src.read(ctx_at(2026, 1, 1, 1))
+    detector.n = 0x10  # the hardware counter wrapped past 2**30
+    assert src.read(ctx_at(2026, 1, 1, 1, 0, 2)) - first == 0x20
+
+
+def test_muon_tally_needs_a_detector(monkeypatch):
+    monkeypatch.delitem(sources.HARDWARE, "detector", raising=False)
+    with pytest.raises(SourceError):
+        make("muons_today").read(ctx_at(2026, 1, 1))
+
+
+def test_muon_display_lights_overrange_past_99999(detector):
+    app = App([{"source": "muons_today"}])
+    detector.n = 123456
+    assert app.number(epoch(2026, 1, 1, 23)) == 123456  # lamp + "23456"
+
+
+@pytest.fixture
+def fake_ticks(monkeypatch):
+    clock = {"us": 1000}
+    monkeypatch.setattr(time, "ticks_us", lambda: clock["us"], raising=False)
+    monkeypatch.setattr(time, "ticks_diff", lambda a, b: a - b, raising=False)
+    return clock
+
+
+def test_pulse_counter_single_with_dead_time(fake_ticks):
+    import machine
+    from detector import PulseCounter
+
+    pc = PulseCounter(18, dead_us=50)
+    fire = machine.Pin.handlers[18]
+    for t in (2000, 2010, 2100, 5000):  # 2010 is ringing on the same pulse
+        fake_ticks["us"] = t
+        fire(None)
+    assert pc.total() == 3
+
+
+def test_pulse_counter_coincidence(fake_ticks):
+    import machine
+    from detector import PulseCounter
+
+    pc = PulseCounter(18, pin_b=19, window_us=100)
+    a, b = machine.Pin.handlers[18], machine.Pin.handlers[19]
+    events = [(10000, a), (10030, b),     # muon through both: counts
+              (20000, a),                 # gamma in A only
+              (30000, b),                 # noise in B only
+              (40000, b), (40080, a),     # muon, B first: counts
+              (50000, a), (50500, b)]     # too far apart: accidental, no count
+    for t, fire in events:
+        fake_ticks["us"] = t
+        fire(None)
+    assert pc.total() == 2
+    assert pc.singles == 4  # pulses on A
+
+
+def test_serial_counter_counts_cosmicwatch_lines():
+    from detector import SerialEventCounter
+
+    sc = SerialEventCounter.__new__(SerialEventCounter)  # skip the UART
+    sc.count, sc._partial = 0, b""
+    # CosmicWatch v2 style: '###' header lines, then one numbered line per event
+    sc.feed(b"##########\r\n### Event Ardn_time[ms] ADC[0-1023] SiPM[mV] Deadtime[ms] Temp[C]\r\n")
+    sc.feed(b"Desk-1\r\n1 1532 455 61.20 3 22.10\r\n2 2911 6")
+    assert sc.count == 1  # the second line is not finished yet
+    sc.feed(b"02 88.41 5 22.10\r\n\r\n")
+    assert sc.count == 2

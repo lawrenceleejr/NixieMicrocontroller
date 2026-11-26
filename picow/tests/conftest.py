@@ -98,13 +98,14 @@ machine.freq = lambda: 125000000
 
 
 class FakePin:
-    OUT, IN, IRQ_RISING = 1, 0, 8
+    OUT, IN, IRQ_RISING, IRQ_FALLING, PULL_UP, PULL_DOWN = 1, 0, 8, 4, 1, 2
+    handlers = {}  # pin number -> irq handler, so tests can "fire" a pin
 
-    def __init__(self, *a, **kw):
-        self.args = a
+    def __init__(self, pin, *a, **kw):
+        self.pin = pin
 
-    def irq(self, *a, **kw):
-        pass
+    def irq(self, handler=None, trigger=None, hard=False):
+        FakePin.handlers[self.pin] = handler
 
 
 machine.Pin = FakePin
@@ -119,12 +120,17 @@ sys.modules["uctypes"] = uctypes
 
 # -------------------------------------------------------------- emulator --
 class PioEmulator:
-    """Runs a recorded program. One instruction per cycle; the TX FIFO is
-    always topped up from `words` in a ring, as the DMA does."""
+    """Runs a recorded program. One instruction per cycle. Like the DMA, the
+    TX FIFO (8 deep, joined) is kept topped up from `memory`, read as a ring of
+    four words, so the program sees words fetched up to two frames earlier.
+    Tests may change `memory` at any time, as the Engine does."""
+
+    DEPTH = 8
 
     def __init__(self, prog, words):
         self.prog = prog
-        self.words = list(words)
+        self.memory = list(words)
+        self.fifo = []
         self.k = 0
         self.reg = {"x": 0, "y": 0, "osr": 0, "isr": 0}
         self.pin = 0
@@ -133,11 +139,13 @@ class PioEmulator:
         self.rising = []  # cycle at which the pin went high
 
     def step(self):
+        while len(self.fifo) < self.DEPTH:
+            self.fifo.append(self.memory[self.k % 4])
+            self.k += 1
         op = self.prog.instructions[self.pc]
         jumped = False
         if op[0] == "pull":
-            self.reg["osr"] = self.words[self.k % len(self.words)]
-            self.k += 1
+            self.reg["osr"] = self.fifo.pop(0)
         elif op[0] == "mov":
             self.reg[op[1]] = self.reg[op[2]]
         elif op[0] == "set":
