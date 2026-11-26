@@ -4,15 +4,29 @@ Turn a **Heathkit IB-1100** Nixie frequency counter (1972–75: five Nixie
 digits plus an overrange lamp, 1 Hz – 30 MHz) into a live number display.
 
 A frequency counter shows how many edges arrive during its gate time. With a
-1-second gate, a square wave of exactly **N Hz** reads **N**. An Arduino makes
-that square wave, and a small Python program decides what N should be:
-births in the US so far today, earthquakes in the last 24 hours, the outdoor
-temperature in kelvin, or any number from any JSON feed.
+1-second gate, a square wave of exactly **N Hz** reads **N**. A microcontroller
+makes that square wave, and decides what N should be: births in the US so far
+today, earthquakes in the last 24 hours, the outdoor temperature in kelvin, or
+any number from any JSON feed.
+
+There are two ways to build it:
+
+| | **Raspberry Pi Pico W** ([picow/](picow/README.md)), recommended | **Arduino + computer** |
+|---|---|---|
+| boards | one Pico W, nothing else | Arduino Nano/Uno + PC or Raspberry Pi |
+| data | fetched over Wi-Fi by the Pico | fetched by `nixiefeed` on the computer |
+| signal | PIO + DMA: exact, no CPU, up to ~17 MHz | Timer1 + interrupt: exact, up to 106 kHz |
+| control | web page on your phone | command line |
+| language | MicroPython | C++ firmware + Python host |
 
 ```
- data source ──► nixiefeed (Python, on a PC / Raspberry Pi) ──USB serial──►
-     Arduino Nano/Uno "NixieCounter" ──D10: N-Hz square wave──► IB-1100 INPUT
+Pico W:   data APIs ──Wi-Fi──► Pico W (MicroPython, PIO) ──GP16──► IB-1100 INPUT
+
+Arduino:  data APIs ──► nixiefeed (PC / Raspberry Pi) ──USB──► Arduino ──D10──► IB-1100 INPUT
 ```
+
+The rest of this page describes the Arduino version; the Pico W has
+[its own guide](picow/README.md).
 
 ## Why this is harder than `tone(pin, N)`
 
@@ -87,6 +101,8 @@ More ideas, including hardware ones, are in [docs/IDEAS.md](docs/IDEAS.md).
 ## Layout
 
 ```
+picow/                   Pico W version (MicroPython): PIO engine, sources, web page
+picow/tests/             PC tests, including a cycle-accurate PIO emulator
 firmware/NixieCounter/   Arduino sketch (Uno, Nano, Pro Mini, Leonardo, Mega)
   FracDivider.h          the exact-frequency maths (portable, unit-tested)
   PulseEngine.*          AVR Timer1 back end
@@ -101,6 +117,7 @@ docs/                    hardware, protocol, ideas
 ## Tests
 
 ```sh
+python -m pytest picow/tests      # Pico W: PIO emulation, sources, web
 make -C firmware/test test        # timer simulation + parser
 cd host && python -m pytest       # host package
 pio run -d firmware               # firmware compiles for the Nano
