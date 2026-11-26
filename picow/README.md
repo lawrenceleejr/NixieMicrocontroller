@@ -3,12 +3,34 @@
 One Raspberry Pi Pico W does everything: counts cosmic rays (or fetches data
 over Wi-Fi) and drives the IB-1100. No computer and no Arduino needed.
 
-The default configuration shows one number all day: **cosmic-ray muons that
-have passed through the detector beside the counter since midnight**. Each
-tick is a particle from an air shower that started high in the atmosphere,
-usually set off by a cosmic ray from far outside the solar system. Arrivals
-are random, so the count goes up in clumps and pauses, and now and then
-several particles from one shower arrive together.
+The default configuration shows one number, live: **cosmic-ray neutrons
+counted in the last minute by the neutron monitor at Oulu, Finland** (about
+6,000, running since 1964). They are the debris of cosmic rays, particles
+from far outside the solar system, hitting the atmosphere. The number
+wanders by about ±80 from minute to minute (counting statistics), and dips
+for days after big solar storms. No extra hardware: just Wi-Fi.
+
+## Live science sources (no extra hardware)
+
+| source | what the tubes show | live value on 2026-11-26 |
+|---|---|---|
+| `cosmic_rays` (default) | neutrons per minute at a neutron monitor (`station`: OULU, THUL Greenland, JUNG Swiss Alps…), 1–3 min behind real time | 06180 (Oulu), 09302 (Jungfraujoch) |
+| `sun_xrays` | the Sun's X-ray brightness from GOES in nW/m². The number of digits is the flare class: B = 3, C = 4, M = 5, and X lights the overrange lamp | 00178 (B1.8) |
+| `deep_space` | NASA Deep Space Network right now: light-seconds to the farthest spacecraft it's talking to | 72500 (Voyager 2, 21.7 billion km) |
+| `deep_space`, `stat=kbps` | kilobits per second arriving from space | 30168 (7 spacecraft) |
+| `iss_distance` | km in a straight line from you to the astronauts on the ISS (changes every second) | 09536 from New York |
+
+The web page shows a line of detail under the number, e.g. "Voyager 2, 21.7
+billion km" or "class B1.8 at 11:26 UTC".
+
+Neutron monitor data: we acknowledge the NMDB database (www.nmdb.eu), founded
+under the European Union's FP7 programme (contract no. 213007), and the
+institutes that run each station. Please keep requests to once a minute.
+
+## Your own detector (later)
+
+The `muons_today` source counts cosmic-ray muons with a detector beside the
+counter: a running total since midnight.
 
 ```
 Pico W GP16 ──[2.2 kΩ]──┬──────── BNC centre ──► IB-1100 INPUT
@@ -26,7 +48,7 @@ optional: counter time-base tap or GPS 1PPS ──[1 kΩ]──► GP17   (3.3 V
 
 Power the Pico from any USB charger.
 
-## Cosmic-ray detector
+### Detectors
 
 | detector | what it counts | rate | wiring |
 |---|---|---|---|
@@ -54,7 +76,7 @@ The day's tally is saved to flash every 5 minutes, so a power cut loses at
 most that much, and it restarts at **local** midnight (time zone from your
 latitude/longitude).
 
-### Why the display never steps backwards
+## Why a changing number never reads wrong
 
 While a number is being counted, its value changes about once a second, often
 in the middle of the counter's gate. The pulses in each 1-second frame sit
