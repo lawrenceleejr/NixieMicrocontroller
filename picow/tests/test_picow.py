@@ -645,6 +645,39 @@ def test_stream_client_against_local_server(monkeypatch):
     assert not s.connected
 
 
+def test_stream_client_chunked_encoding():
+    """HTTP/1.1 chunked body with chunk boundaries cutting lines in half."""
+    body = b"".join(stream_fixture())
+    rng = random.Random(3)
+    chunks, i = [], 0
+    while i < len(body):
+        n = rng.randrange(1, 3000)
+        chunks.append(b"%x\r\n" % len(body[i:i + n]) + body[i:i + n] + b"\r\n")
+        i += n
+    chunks.append(b"0\r\n\r\n")
+
+    async def scenario():
+        async def serve(reader, writer):
+            await reader.readline()
+            writer.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                         b"Content-Type: text/event-stream\r\n\r\n")
+            for c in chunks:
+                writer.write(c)
+                await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(serve, "127.0.0.1", 0)
+        s = WikiEditStream(host="127.0.0.1", port=server.sockets[0].getsockname()[1],
+                           use_tls=False)
+        with pytest.raises(OSError):
+            await s.read_once()
+        server.close()
+        return s
+
+    s = asyncio.run(scenario())
+    assert s.events == 25 and s.edits == 9
+
+
 def test_wikipedia_source_reports_stream_state():
     src = make("wikipedia_edits", {"wiki": "enwiki"})
     assert src.stream.wiki == b"enwiki"

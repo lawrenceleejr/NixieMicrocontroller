@@ -5,10 +5,10 @@
 # of which are edits by people rather than bots. We keep one connection open,
 # read it line by line, and count human edits in a rolling window.
 #
-# Runs as an asyncio task beside the display loop and the web page. It asks
-# for HTTP/1.0, so the server sends one plain stream (no chunked encoding),
-# and it tests each event with two substring checks instead of decoding the
-# JSON: at ~50 KB/s that matters on a Pico.
+# Runs as an asyncio task beside the display loop and the web page. It speaks
+# HTTP/1.1 (some networks' proxies refuse HTTP/1.0) and undoes the "chunked"
+# transfer encoding itself, and it tests each event with two substring checks
+# instead of decoding the JSON: at ~50 KB/s that matters on a Pico.
 
 import time
 
@@ -89,32 +89,39 @@ class WikiEditStream:
                 self.window.add(now)
 
     async def read_once(self):
-        """Connect, read until the connection drops."""
+        """Connect, read until the connection drops (then raise OSError)."""
         ssl = tls_context() if self.use_tls else None
         reader, writer = await asyncio.open_connection(self.host, self.port, ssl=ssl)
         try:
-            request = ("GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: %s\r\n"
-                       "Accept: text/event-stream\r\n\r\n" % (self.PATH, self.host,
-                                                              self.user_agent))
+            request = ("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
+                       "Accept: text/event-stream\r\nAccept-Encoding: identity\r\n\r\n"
+                       % (self.PATH, self.host, self.user_agent))
             writer.write(request.encode())
             await writer.drain()
             status = await reader.readline()
             if b" 200" not in status:
                 raise OSError("stream refused: %s" % status.strip())
+            chunked = False
             while True:  # headers
                 line = await reader.readline()
                 if not line:
                     raise OSError("stream closed")
                 if line in (b"\r\n", b"\n"):
                     break
+                low = line.lower()
+                if low.startswith(b"transfer-encoding:") and b"chunked" in low:
+                    chunked = True
             self.connected = True
             self.connected_at = time.time()
             self.error = ""
-            while True:
-                line = await reader.readline()
-                if not line:
-                    raise OSError("stream closed by server")
-                self.feed(line, int(time.time()))
+            if chunked:
+                await self._read_chunked(reader)
+            else:
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        raise OSError("stream closed by server")
+                    self.feed(line, int(time.time()))
         finally:
             self.connected = False
             writer.close()
@@ -122,6 +129,34 @@ class WikiEditStream:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    async def _read_chunked(self, reader):
+        """HTTP/1.1 chunked body: <hex size>CRLF <data> CRLF ... A chunk can
+        end in the middle of an event line, so lines are rebuilt in a buffer."""
+        buf = b""
+        while True:
+            size_line = await reader.readline()
+            if not size_line:
+                raise OSError("stream closed by server")
+            try:
+                size = int(size_line.split(b";")[0].strip(), 16)
+            except ValueError:
+                raise OSError("bad chunk header %r" % size_line[:20])
+            if size == 0:
+                raise OSError("stream ended by server")
+            buf += await reader.readexactly(size)
+            await reader.readline()  # the CRLF after each chunk
+            now = int(time.time())
+            start = 0
+            while True:
+                nl = buf.find(b"\n", start)
+                if nl < 0:
+                    break
+                self.feed(buf[start:nl + 1], now)
+                start = nl + 1
+            buf = buf[start:]
+            if len(buf) > 16384:  # a runaway line: drop it rather than run out of RAM
+                buf = b""
 
     async def run(self):
         """Keep the stream open forever, reconnecting with backoff."""

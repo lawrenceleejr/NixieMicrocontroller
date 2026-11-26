@@ -3,18 +3,24 @@
 One Raspberry Pi Pico W does everything: counts cosmic rays (or fetches data
 over Wi-Fi) and drives the IB-1100. No computer and no Arduino needed.
 
-The default configuration shows one number, live: **cosmic-ray neutrons
-counted in the last minute by the neutron monitor at Oulu, Finland** (about
-6,000, running since 1964). They are the debris of cosmic rays, particles
-from far outside the solar system, hitting the atmosphere. The number
-wanders by about ±80 from minute to minute (counting statistics), and dips
-for days after big solar storms. No extra hardware: just Wi-Fi.
+The default configuration shows one number, live from the internet:
+**how many times people edited Wikipedia in the last minute**, in every
+language. It comes from Wikimedia's public live stream of every change as it
+is saved (stream.wikimedia.org); bots are left out. On a Thursday morning
+(UTC) it read 00539–00629, rising and falling as bursts of people
+edited, and it jumps when news breaks and everyone rushes to update an
+article. `"params": {"wiki": "enwiki"}` limits it to English Wikipedia.
 
-## Live science sources (no extra hardware)
+The Pico holds one connection open and counts events as they arrive (about
+50 KB/s, 20–40 events a second); the number on the tubes is the count in the
+last 60 seconds, updated every second.
+
+## Live sources (no extra hardware)
 
 | source | what the tubes show | live value on 2026-11-26 |
 |---|---|---|
-| `cosmic_rays` (default) | neutrons per minute at a neutron monitor (`station`: OULU, THUL Greenland, JUNG Swiss Alps…), 1–3 min behind real time | 06180 (Oulu), 09302 (Jungfraujoch) |
+| `wikipedia_edits` (default) | human edits to Wikipedia in the last minute, from the live stream | 00539–00629 |
+| `cosmic_rays` | neutrons per minute at a neutron monitor (`station`: OULU, THUL Greenland, JUNG Swiss Alps…), 1–3 min behind real time | 06180 (Oulu), 09302 (Jungfraujoch) |
 | `sun_xrays` | the Sun's X-ray brightness from GOES in nW/m². The number of digits is the flare class: B = 3, C = 4, M = 5, and X lights the overrange lamp | 00178 (B1.8) |
 | `deep_space` | NASA Deep Space Network right now: light-seconds to the farthest spacecraft it's talking to | 72500 (Voyager 2, 21.7 billion km) |
 | `deep_space`, `stat=kbps` | kilobits per second arriving from space | 30168 (7 spacecraft) |
@@ -111,7 +117,7 @@ ppm). Calibrate once from the web page, or connect a reference to GP17 (see
 ## Install
 
 1. Hold BOOTSEL, plug in the Pico W, and copy the latest **MicroPython for
-   Pico W** `.uf2` (micropython.org/download/RPI_PICO_W) onto the drive that
+   Pico W** (1.22 or newer, for TLS streams and DMA) `.uf2` (micropython.org/download/RPI_PICO_W) onto the drive that
    appears.
 2. `pip install mpremote`
 3. Copy `config_example.py` to `config.py` and fill in your Wi-Fi network,
@@ -120,7 +126,7 @@ ppm). Calibrate once from the web page, or connect a reference to GP17 (see
 
    ```sh
    cd picow
-   mpremote cp app.py detector.py display.py main.py nixie_pio.py sources.py web.py config.py :
+   mpremote cp app.py detector.py display.py main.py nixie_pio.py sources.py stream.py web.py config.py :
    mpremote reset
    ```
 
