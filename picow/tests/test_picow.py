@@ -580,3 +580,81 @@ def test_http_text_tail_streams(monkeypatch):
     monkeypatch.setattr(sources, "requests", fake404)
     with pytest.raises(SourceError):
         sources.http_text("https://e/x")
+
+
+# ------------------------------------------------------ Wikipedia stream --
+import asyncio
+
+import stream as stream_mod
+from stream import Window, WikiEditStream, is_human_edit
+
+
+def stream_fixture():
+    with open(__import__("os").path.join(DATA, "wikimedia_stream.txt"), "rb") as f:
+        return f.read().splitlines(keepends=True)
+
+
+def test_is_human_edit_on_real_events():
+    lines = stream_fixture()
+    data = [l for l in lines if l.startswith(b"data:")]
+    assert len(data) == 25
+    human = [l for l in data if is_human_edit(l)]
+    assert len(human) == 9
+    # the fast substring test agrees with decoding the JSON
+    for l in data:
+        e = json.loads(l[5:])
+        assert is_human_edit(l) == (e["type"] in ("edit", "new") and e.get("bot") is False)
+    assert sum(is_human_edit(l, b"enwiki") for l in data) == 2
+    assert not is_human_edit(b"event: message\n")
+
+
+def test_window_rolls():
+    w = Window(60)
+    for t in (100, 100, 101, 130, 159):
+        w.add(t)
+    assert w.count(159) == 5
+    assert w.count(160) == 3   # the two at t=100 have left the minute
+    assert w.count(161) == 2
+    w.add(161 + 60)            # reuses the bucket of t=161, resetting it
+    assert w.count(161 + 60) == 1
+
+
+def test_stream_client_against_local_server(monkeypatch):
+    events = stream_fixture()
+
+    async def scenario():
+        async def serve(reader, writer):
+            await reader.readline()  # request line; ignore the rest
+            writer.write(b"HTTP/1.0 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+            for line in events:
+                writer.write(line)
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(serve, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        s = WikiEditStream(host="127.0.0.1", port=port, use_tls=False)
+        with pytest.raises(OSError):  # the server hangs up at the end
+            await s.read_once()
+        server.close()
+        return s
+
+    s = asyncio.run(scenario())
+    assert s.events == 25 and s.edits == 9
+    assert s.window.count(int(time.time())) == 9
+    assert not s.connected
+
+
+def test_wikipedia_source_reports_stream_state():
+    src = make("wikipedia_edits", {"wiki": "enwiki"})
+    assert src.stream.wiki == b"enwiki"
+    now = int(time.time())
+    with pytest.raises(SourceError):          # not connected yet
+        src.read(Context(now))
+    for l in stream_fixture():
+        src.stream.feed(l, now)
+    src.stream.connected = True
+    assert src.read(Context(now)) == 2
+    assert src.detail.startswith("live; 2 human edits")
+    with pytest.raises(SourceError):          # 3 minutes of silence
+        src.read(Context(now + 180))

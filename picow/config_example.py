@@ -35,9 +35,11 @@ DETECTOR = None
 # optional params and format (scale/offset, overflow "clip"|"wrap"|"overrange",
 # channel 0-9). More sources: see picow/README.md.
 PLAYLIST = [
-    {"source": "cosmic_rays"},   # neutrons from cosmic rays per minute, Oulu, Finland
+    {"source": "wikipedia_edits"},  # people editing Wikipedia in the last minute, live
 ]
-# Other live science to try (one line each):
+# Others to try (one line each):
+#   {"source": "wikipedia_edits", "params": {"wiki": "enwiki"}}  # English Wikipedia only
+#   {"source": "cosmic_rays"}    # cosmic-ray neutrons per minute, Oulu, Finland
 #   {"source": "cosmic_rays", "params": {"station": "THUL"}}  # Thule, Greenland
 #   {"source": "sun_xrays"}      # the Sun's X-rays: digits = flare class, X lights the lamp
 #   {"source": "deep_space"}     # light-seconds to the farthest spacecraft NASA hears now

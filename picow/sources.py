@@ -594,6 +594,34 @@ def iss_distance_km(lat1, lon1, lat2, lon2, alt_km, radius=6371.0):
     return math.sqrt(max(0.0, r1 * r1 + r2 * r2 - 2 * r1 * r2 * cos_angle))
 
 
+class WikipediaEdits(Source):
+    """Human edits to Wikipedia in the last minute, from Wikimedia's live
+    stream of every change (stream.wikimedia.org). Every language and sister
+    project by default; wiki="enwiki" for English Wikipedia only. It spikes
+    when something happens in the world and everyone rushes to update it."""
+
+    summary = "human edits to Wikipedia in the last minute (live)"
+    refresh_s = 0      # the stream task updates the count; reading is free
+    wiki = ""          # "" = all; "enwiki", "dewiki", "wikidatawiki", ...
+    window_s = 60
+
+    def __init__(self, **params):
+        Source.__init__(self, **params)
+        from stream import WikiEditStream
+        self.stream = WikiEditStream(self.wiki, self.window_s)  # main.py runs it
+
+    def read(self, ctx):
+        s = self.stream
+        if not s.last_event:
+            raise SourceError(s.error or "connecting to stream.wikimedia.org")
+        quiet = ctx.now - s.last_event
+        if quiet > 120:
+            raise SourceError("no events for %d s (%s)" % (quiet, s.error or "reconnecting"))
+        self.detail = "%s; %d human edits counted since start-up" % (
+            "live" if s.connected else "reconnecting", s.edits)
+        return float(s.window.count(ctx.now))
+
+
 # Hardware counters set up by main.py from config.DETECTOR, by name.
 HARDWARE = {}
 
@@ -693,6 +721,7 @@ SOURCES = {
     "kp_index": (KpIndex, KpIndex.summary, {}),
     "river": (River, River.summary, {}),
     "json": (JsonValue, JsonValue.summary, {}),
+    "wikipedia_edits": (WikipediaEdits, WikipediaEdits.summary, {}),
     "cosmic_rays": (CosmicRays, "cosmic-ray neutrons per minute at Oulu, Finland", {}),
     "sun_xrays": (SunXrays, SunXrays.summary, {}),
     "deep_space": (DeepSpace, DeepSpace.summary, {}),

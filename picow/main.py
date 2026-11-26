@@ -150,6 +150,9 @@ async def main():
     ctl.exercise(time.time())  # light every digit once at start-up
 
     tasks = [display_loop(ctl), housekeeping(ctl, engine, synced, offset is not None)]
+    for item in app.items:  # live streams (e.g. wikipedia_edits) run as their own tasks
+        if getattr(item.source, "stream", None) is not None:
+            tasks.append(item.source.stream.run())
     if cfg("REF_PIN", None) is not None and cfg("REF_HZ", 0):
         tasks.append(reference_loop(ctl, RefLock(config.REF_PIN, config.REF_HZ)))
     if ip:
