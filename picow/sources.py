@@ -63,7 +63,9 @@ def http_text(url, tail=None):
         raise SourceError("no requests module")
     short = url.split("?")[0]
     try:
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20, stream=True)
+        # identity: no gzip, so the raw stream is plain text on every platform
+        r = requests.get(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"},
+                         timeout=20, stream=True)
     except Exception as e:
         raise SourceError("%s: %s" % (short, e))
     try:
